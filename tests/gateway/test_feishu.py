@@ -8,7 +8,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 try:
     import lark_oapi
@@ -289,7 +289,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
             patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
             patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
-            patch("gateway.platforms.feishu.EventDispatcherHandler", object()),
+            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
             patch("gateway.platforms.feishu.FeishuWSClient", return_value=ws_client),
             patch("gateway.platforms.feishu._run_official_feishu_ws_client"),
             patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)) as acquire_lock,
@@ -297,6 +297,14 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch.object(adapter, "_hydrate_bot_identity", new=AsyncMock()),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
+            mock_builder = Mock()
+            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+            mock_builder.build = Mock(return_value=object())
+            mock_handler_class.builder = Mock(return_value=mock_builder)
             loop = asyncio.new_event_loop()
             future = loop.create_future()
             future.set_result(None)
@@ -304,6 +312,9 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             class _Loop:
                 def run_in_executor(self, *_args, **_kwargs):
                     return future
+
+                def is_closed(self):
+                    return False
 
             try:
                 with patch("gateway.platforms.feishu.asyncio.get_running_loop", return_value=_Loop()):
@@ -313,12 +324,37 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                 loop.close()
 
         self.assertTrue(connected)
+        self.assertIsNone(adapter._event_handler)
         acquire_lock.assert_called_once_with(
             "feishu-app-id",
             "cli_app",
             metadata={"platform": "feishu"},
         )
         release_lock.assert_called_once_with("feishu-app-id", "cli_app")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_request_uses_same_message_dispatch_path(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._on_message_event = Mock()
+
+        body = json.dumps({
+            "header": {"event_type": "im.message.receive_v1"},
+            "event": {"message": {"message_id": "om_test"}},
+        }).encode("utf-8")
+        request = SimpleNamespace(
+            remote="127.0.0.1",
+            content_length=None,
+            headers={},
+            read=AsyncMock(return_value=body),
+        )
+
+        response = asyncio.run(adapter._handle_webhook_request(request))
+
+        self.assertEqual(response.status, 200)
+        adapter._on_message_event.assert_called_once()
 
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
@@ -361,7 +397,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.FEISHU_AVAILABLE", True),
             patch("gateway.platforms.feishu.FEISHU_WEBSOCKET_AVAILABLE", True),
             patch("gateway.platforms.feishu.lark", SimpleNamespace(LogLevel=SimpleNamespace(INFO="INFO", WARNING="WARNING"))),
-            patch("gateway.platforms.feishu.EventDispatcherHandler", object()),
+            patch("gateway.platforms.feishu.EventDispatcherHandler") as mock_handler_class,
             patch("gateway.platforms.feishu.FeishuWSClient", return_value=ws_client),
             patch("gateway.platforms.feishu.acquire_scoped_lock", return_value=(True, None)),
             patch("gateway.platforms.feishu.release_scoped_lock"),
@@ -369,6 +405,14 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
             patch("gateway.platforms.feishu.asyncio.sleep", side_effect=lambda delay: sleeps.append(delay)),
             patch.object(adapter, "_build_lark_client", return_value=SimpleNamespace()),
         ):
+            mock_builder = Mock()
+            mock_builder.register_p2_im_message_message_read_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_receive_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_created_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_im_message_reaction_deleted_v1 = Mock(return_value=mock_builder)
+            mock_builder.register_p2_card_action_trigger = Mock(return_value=mock_builder)
+            mock_builder.build = Mock(return_value=object())
+            mock_handler_class.builder = Mock(return_value=mock_builder)
             loop = asyncio.new_event_loop()
             future = loop.create_future()
             future.set_result(None)
@@ -382,6 +426,9 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
                     if self.calls == 1:
                         raise OSError("temporary websocket failure")
                     return future
+
+                def is_closed(self):
+                    return False
 
             fake_loop = _Loop()
             try:
@@ -1146,7 +1193,13 @@ class TestAdapterBehavior(unittest.TestCase):
             return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
         )
         adapter._resolve_sender_profile = AsyncMock(
-            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+            return_value={
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": None,
+                "union_id": None,
+                "user_name": "张三",
+            }
         )
         message = SimpleNamespace(
             chat_id="oc_chat",
@@ -1220,7 +1273,7 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(submit.called)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_process_inbound_message_uses_event_sender_identity_only(self):
+    def test_resolve_sender_profile_primary_identity_prefers_open_id(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.base import MessageType
         from gateway.platforms.feishu import FeishuAdapter
@@ -1463,6 +1516,216 @@ class TestAdapterBehavior(unittest.TestCase):
                 self.assertTrue(second._is_duplicate("om_same"))
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_uses_event_sender_identity_only(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        # Sender name now comes from the contact API; mock it to return a known value.
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            message_type="text",
+            content='{"text":"hello"}',
+            message_id="om_text",
+        )
+        sender_id = SimpleNamespace(
+            open_id="ou_user",
+            user_id="u_user",
+            union_id="on_union",
+        )
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=SimpleNamespace(sender_id=sender_id)))
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                chat_type="p2p",
+                message_id="om_text",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_awaited_once()
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertEqual(event.text, "hello")
+        self.assertEqual(event.source.user_id, "ou_user")
+        self.assertEqual(event.source.user_id_alt, "on_union")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_resolve_sender_profile_exposes_raw_ids(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+
+        profile = asyncio.run(
+            adapter._resolve_sender_profile(
+                SimpleNamespace(open_id="ou_user", user_id="u_user", union_id="on_union")
+            )
+        )
+
+        self.assertEqual(
+            profile,
+            {
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": "u_user",
+                "union_id": "on_union",
+                "user_name": "张三",
+            },
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_whoami_in_dm_replies_directly_without_dispatch(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"whoami_id_mode": "both"}))
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.send = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": "u_user",
+                "union_id": "on_union",
+                "user_name": "张三",
+            }
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"/whoami"}',
+            message_id="om_whoami",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id="on_union"),
+                chat_type="p2p",
+                message_id="om_whoami",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_not_awaited()
+        adapter.send.assert_awaited_once()
+        self.assertEqual(adapter.send.await_args.args[0], "oc_chat")
+        response = adapter.send.await_args.args[1]
+        self.assertIn("User Info", response)
+        self.assertIn("User Name: 张三", response)
+        self.assertIn("Open ID: ou_user", response)
+        self.assertIn("User ID: u_user", response)
+        self.assertIn("Chat Type: DM", response)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_whoami_in_group_replies_with_chat_info(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig(extra={"whoami_id_mode": "user_id"}))
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.send = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_group", "name": "X沟通小群", "type": "group"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": "u_user",
+                "union_id": None,
+                "user_name": "张三",
+            }
+        )
+        message = SimpleNamespace(
+            chat_id="oc_group",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"/whoami"}',
+            message_id="om_group_whoami",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id=None),
+                chat_type="group",
+                message_id="om_group_whoami",
+            )
+        )
+
+        adapter._dispatch_inbound_event.assert_not_awaited()
+        response = adapter.send.await_args.args[1]
+        self.assertIn("Chat Info", response)
+        self.assertIn("Chat ID: oc_group", response)
+        self.assertIn("Chat Name: X沟通小群", response)
+        self.assertIn("User ID: u_user", response)
+        self.assertNotIn("Open ID:", response)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_whoami_requires_exact_match(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.send = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": "u_user",
+                "union_id": None,
+                "user_name": "张三",
+            }
+        )
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"/whoami extra"}',
+            message_id="om_not_exact",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id="u_user", union_id=None),
+                chat_type="p2p",
+                message_id="om_not_exact",
+            )
+        )
+
+        adapter.send.assert_not_awaited()
+        adapter._dispatch_inbound_event.assert_awaited_once()
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_process_inbound_group_message_keeps_group_type_when_chat_lookup_falls_back(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1473,7 +1736,13 @@ class TestAdapterBehavior(unittest.TestCase):
             return_value={"chat_id": "oc_group", "name": "oc_group", "type": "dm"}
         )
         adapter._resolve_sender_profile = AsyncMock(
-            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+            return_value={
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": None,
+                "union_id": None,
+                "user_name": "张三",
+            }
         )
         message = SimpleNamespace(
             chat_id="oc_group",
@@ -1509,7 +1778,13 @@ class TestAdapterBehavior(unittest.TestCase):
             return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
         )
         adapter._resolve_sender_profile = AsyncMock(
-            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+            return_value={
+                "primary_id": "ou_user",
+                "open_id": "ou_user",
+                "user_id": None,
+                "union_id": None,
+                "user_name": "张三",
+            }
         )
         adapter._fetch_message_text = AsyncMock(return_value="父消息内容")
         message = SimpleNamespace(

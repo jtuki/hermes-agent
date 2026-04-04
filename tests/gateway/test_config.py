@@ -197,6 +197,38 @@ class TestLoadGatewayConfig:
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_bridges_feishu_whoami_id_mode_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  whoami_id_mode: user_id\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.FEISHU].extra["whoami_id_mode"] == "user_id"
+
+    def test_invalid_feishu_whoami_id_mode_falls_back_to_open_id(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "feishu:\n"
+            "  whoami_id_mode: nonsense\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.FEISHU].extra["whoami_id_mode"] == "open_id"
+
 
 class TestHomeChannelEnvOverrides:
     """Home channel env vars should apply even when the platform was already

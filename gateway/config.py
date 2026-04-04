@@ -535,6 +535,32 @@ def load_gateway_config() -> GatewayConfig:
                     plat_data["extra"] = extra
                 extra.update(bridged)
 
+            # Feishu-specific settings → platform extra
+            feishu_cfg = yaml_cfg.get("feishu", {})
+            if isinstance(feishu_cfg, dict):
+                feishu_bridged = {}
+                if "admins" in feishu_cfg:
+                    feishu_bridged["admins"] = feishu_cfg["admins"]
+                if "default_group_policy" in feishu_cfg:
+                    feishu_bridged["default_group_policy"] = feishu_cfg["default_group_policy"]
+                if "group_rules" in feishu_cfg:
+                    feishu_bridged["group_rules"] = feishu_cfg["group_rules"]
+                if "whoami_id_mode" in feishu_cfg:
+                    whoami_id_mode = str(feishu_cfg["whoami_id_mode"] or "open_id").strip().lower()
+                    if whoami_id_mode not in {"user_id", "open_id", "both"}:
+                        whoami_id_mode = "open_id"
+                    feishu_bridged["whoami_id_mode"] = whoami_id_mode
+                if feishu_bridged:
+                    plat_data = platforms_data.setdefault("feishu", {})
+                    if not isinstance(plat_data, dict):
+                        plat_data = {}
+                        platforms_data["feishu"] = plat_data
+                    extra = plat_data.setdefault("extra", {})
+                    if not isinstance(extra, dict):
+                        extra = {}
+                        plat_data["extra"] = extra
+                    extra.update(feishu_bridged)
+
             # Discord settings → env vars (env vars take precedence)
             discord_cfg = yaml_cfg.get("discord", {})
             if isinstance(discord_cfg, dict):

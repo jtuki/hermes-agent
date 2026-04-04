@@ -1736,7 +1736,14 @@ class GatewayRunner:
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
-        
+
+        # For DMs on platforms that support ACK reactions (e.g. Feishu), add
+        # the ACK *after* auth succeeds so unauthorized users never see it.
+        if source.chat_type == "dm" and event.message_id:
+            _ack_adapter = self.adapters.get(source.platform)
+            if _ack_adapter and hasattr(_ack_adapter, 'add_ack_reaction'):
+                await _ack_adapter.add_ack_reaction(event.message_id)
+
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
         # are handled with minimal latency.
